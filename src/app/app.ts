@@ -127,6 +127,7 @@ export class App implements AfterViewInit, OnDestroy {
   private readonly supabaseAnonKey = 'sb_publishable_vUHF2075R7Nh_ticwQSs2w_Bvv2lbO4';
   private readonly supabaseTable = 'scores';
   private readonly localScoresKey = 'schweine_alarm_scores';
+  private readonly backgroundImagePath = 'assets/img/backgrounds/farm-windmill-background.png';
   private readonly weapons: Weapon[] = [
     {
       id: 'blaster',
@@ -164,6 +165,8 @@ export class App implements AfterViewInit, OnDestroy {
   ];
   private canvas?: HTMLCanvasElement;
   private ctx?: CanvasRenderingContext2D;
+  private readonly backgroundImage = new Image();
+  private backgroundImageReady = false;
   private audioContext?: AudioContext;
   private currentWeaponIndex = 0;
   private weaponAmmo = this.weapons.map((weapon) => weapon.maxAmmo);
@@ -188,6 +191,7 @@ export class App implements AfterViewInit, OnDestroy {
     this.canvas = this.gameCanvasRef.nativeElement;
     this.ctx = this.canvas.getContext('2d') ?? undefined;
     this.bgMusicRef.nativeElement.volume = this.volume();
+    this.loadBackgroundImage();
     this.draw();
     void this.loadHighscores();
   }
@@ -1006,6 +1010,11 @@ export class App implements AfterViewInit, OnDestroy {
   }
 
   private drawBackground(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+    if (this.backgroundImageReady) {
+      this.drawBackgroundImage(ctx, canvas);
+      return;
+    }
+
     const skyGradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
     skyGradient.addColorStop(0, '#7dd3fc');
     skyGradient.addColorStop(0.58, '#bae6fd');
@@ -1047,6 +1056,46 @@ export class App implements AfterViewInit, OnDestroy {
       ctx.lineTo(x + 25, canvas.height);
       ctx.stroke();
     }
+  }
+
+  private loadBackgroundImage(): void {
+    this.backgroundImage.onload = (): void => {
+      this.backgroundImageReady = true;
+      this.draw();
+    };
+
+    this.backgroundImage.onerror = (): void => {
+      this.backgroundImageReady = false;
+      this.draw();
+    };
+
+    this.backgroundImage.src = this.backgroundImagePath;
+  }
+
+  private drawBackgroundImage(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
+    const imageWidth = this.backgroundImage.naturalWidth || this.backgroundImage.width;
+    const imageHeight = this.backgroundImage.naturalHeight || this.backgroundImage.height;
+
+    if (imageWidth === 0 || imageHeight === 0) {
+      return;
+    }
+
+    const canvasRatio = canvas.width / canvas.height;
+    const imageRatio = imageWidth / imageHeight;
+    let sourceX = 0;
+    let sourceY = 0;
+    let sourceWidth = imageWidth;
+    let sourceHeight = imageHeight;
+
+    if (imageRatio > canvasRatio) {
+      sourceWidth = imageHeight * canvasRatio;
+      sourceX = (imageWidth - sourceWidth) / 2;
+    } else {
+      sourceHeight = imageWidth / canvasRatio;
+      sourceY = (imageHeight - sourceHeight) / 2;
+    }
+
+    ctx.drawImage(this.backgroundImage, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
   }
 
   private drawCloud(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number): void {
