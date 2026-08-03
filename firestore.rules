@@ -1,0 +1,30 @@
+rules_version = '2';
+
+// Firestore-Sicherheitsregeln fuer das Highscore-Board "Schweine Alarm".
+//
+// Diese Regeln erlauben das oeffentliche Lesen aller Highscores und das
+// Anlegen neuer Eintraege ohne Login. Bestehende Eintraege koennen NICHT
+// veraendert oder geloescht werden, damit niemand fremde Scores manipuliert.
+//
+// Einspielen:
+//   1. Firebase-Konsole -> Firestore Database -> Regeln -> hier einfuegen
+//   ODER per CLI:  firebase deploy --only firestore:rules
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /scores/{scoreId} {
+      // Jeder darf die Bestenliste lesen.
+      allow read: if true;
+
+      // Neue Scores duerfen angelegt werden, wenn die Felder plausibel sind.
+      allow create: if request.resource.data.player_name is string
+                    && request.resource.data.player_name.size() <= 40
+                    && request.resource.data.score is int
+                    && request.resource.data.score >= 0
+                    && request.resource.data.hits is int
+                    && request.resource.data.hits >= 0;
+
+      // Bestehende Eintraege sind unveraenderlich.
+      allow update, delete: if false;
+    }
+  }
+}

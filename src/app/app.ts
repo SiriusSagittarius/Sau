@@ -4,7 +4,7 @@ type GameScreen = 'start' | 'playing' | 'paused' | 'game-over';
 type PigType = 'normal' | 'fast' | 'gold' | 'bomb';
 type WeaponId = 'blaster' | 'shotgun' | 'rifle';
 type PausePanel = 'main' | 'options' | 'imprint' | 'privacy' | 'leaderboard';
-type PerkType = 'time' | 'double-shot' | 'fast-reload' | 'screen-bomb';
+type PerkType = 'time' | 'double-shot' | 'fast-reload' | 'screen-bomb' | 'gatling' | 'infinite-ammo';
 
 interface Pig {
   x: number;
@@ -15,6 +15,7 @@ interface Pig {
   type: PigType;
   points: number;
   health: number;
+  maxHealth: number;
   wobble: number;
 }
 
@@ -75,11 +76,24 @@ interface HighscoreEntry {
   createdAt: string;
 }
 
-interface SupabaseScoreRow {
-  player_name?: string;
-  score?: number;
-  hits?: number;
-  created_at?: string;
+interface FirestoreValue {
+  stringValue?: string;
+  integerValue?: string;
+  doubleValue?: number;
+  timestampValue?: string;
+}
+
+interface FirestoreDocument {
+  fields?: {
+    player_name?: FirestoreValue;
+    score?: FirestoreValue;
+    hits?: FirestoreValue;
+    created_at?: FirestoreValue;
+  };
+}
+
+interface FirestoreListResponse {
+  documents?: FirestoreDocument[];
 }
 
 type AudioWindow = Window &
@@ -100,8 +114,8 @@ export class App implements AfterViewInit, OnDestroy {
 
   protected readonly score = signal(0);
   protected readonly hits = signal(0);
-  protected readonly ammo = signal(8);
-  protected readonly maxAmmo = signal(8);
+  protected readonly ammo = signal(20);
+  protected readonly maxAmmo = signal(20);
   protected readonly weaponName = signal('Blaster');
   protected readonly timeLeft = signal(60);
   protected readonly bestScore = signal(0);
@@ -120,19 +134,23 @@ export class App implements AfterViewInit, OnDestroy {
   protected readonly perkStatus = signal('Keine');
   protected readonly doubleShotTime = signal(0);
   protected readonly fastReloadTime = signal(0);
+  protected readonly gatlingTime = signal(0);
+  protected readonly infiniteAmmoTime = signal(0);
   protected readonly scoreSaved = signal(false);
   protected readonly scoreSaving = signal(false);
 
-  private readonly supabaseUrl = 'https://lhxnyuqgfurvkpmafdwz.supabase.co';
-  private readonly supabaseAnonKey = 'sb_publishable_vUHF2075R7Nh_ticwQSs2w_Bvv2lbO4';
-  private readonly supabaseTable = 'scores';
+  // Firebase / Firestore Konfiguration (aus der Firebase-Konsole).
+  private readonly firebaseProjectId = 'sauerei-abad9';
+  private readonly firebaseApiKey = 'AIzaSyAOIlv-gq3zuKBfBEET5l_hF0Q6OgFtOrM';
+  private readonly firestoreCollection = 'scores';
+  private readonly firestoreBaseUrl = `https://firestore.googleapis.com/v1/projects/${this.firebaseProjectId}/databases/(default)/documents`;
   private readonly localScoresKey = 'schweine_alarm_scores';
   private readonly backgroundImagePath = 'assets/img/backgrounds/farm-windmill-background.png';
   private readonly weapons: Weapon[] = [
     {
       id: 'blaster',
       name: 'Blaster',
-      maxAmmo: 8,
+      maxAmmo: 20,
       reloadTime: 0.65,
       pellets: 1,
       spread: 0,
@@ -143,7 +161,7 @@ export class App implements AfterViewInit, OnDestroy {
     {
       id: 'shotgun',
       name: 'Schrotflinte',
-      maxAmmo: 5,
+      maxAmmo: 20,
       reloadTime: 0.9,
       pellets: 5,
       spread: 42,
@@ -154,7 +172,7 @@ export class App implements AfterViewInit, OnDestroy {
     {
       id: 'rifle',
       name: 'Gewehr',
-      maxAmmo: 3,
+      maxAmmo: 20,
       reloadTime: 1.05,
       pellets: 1,
       spread: 0,
@@ -184,6 +202,12 @@ export class App implements AfterViewInit, OnDestroy {
   private specialCooldownValue = 0;
   private doubleShotTimer = 0;
   private fastReloadTimer = 0;
+  private gatlingTimer = 0;
+  private infiniteAmmoTimer = 0;
+  private gatlingFireTimer = 0;
+  private pointerDown = false;
+  private lastPointerX = 0;
+  private lastPointerY = 0;
   private reloadTimer = 0;
   private specialActiveTimer?: number;
 
@@ -614,7 +638,9 @@ export class App implements AfterViewInit, OnDestroy {
 
     let speed = 90 + Math.random() * 70;
     let points = 10;
-    const health = 1;
+    // Normale, schnelle und Bomben-Schweine halten 2 Treffer aus,
+    // goldene Schweine 3. Ein Kopftreffer toetet immer sofort.
+    let health = 2;
 
     if (type === 'fast') {
       speed = 180 + Math.random() * 90;
@@ -624,6 +650,7 @@ export class App implements AfterViewInit, OnDestroy {
     if (type === 'gold') {
       speed = 160 + Math.random() * 100;
       points = 100;
+      health = 3;
     }
 
     if (type === 'bomb') {
@@ -640,6 +667,7 @@ export class App implements AfterViewInit, OnDestroy {
       type,
       points,
       health,
+      maxHealth: health,
       wobble: Math.random() * Math.PI * 2,
     });
   }
@@ -1358,42 +1386,69 @@ export class App implements AfterViewInit, OnDestroy {
   }
 
   private async loadOnlineScores(): Promise<HighscoreEntry[] | undefined> {
-    const url = `${this.supabaseUrl}/rest/v1/${this.supabaseTable}?select=player_name,score,hits,created_at&order=score.desc&limit=10`;
+    const url = `${this.firestoreBaseUrl}/${this.firestoreCollection}?key=${this.firebaseApiKey}&pageSize=100`;
 
     try {
-      const response = await fetch(url, {
-        headers: this.supabaseHeaders(),
-      });
+      const response = await fetch(url);
 
       if (!response.ok) {
         return undefined;
       }
 
-      const rows = (await response.json()) as SupabaseScoreRow[];
-      return rows.map((row) => ({
-        name: row.player_name?.trim() || 'Spieler',
-        score: Number(row.score ?? 0),
-        hits: Number(row.hits ?? 0),
-        createdAt: row.created_at ?? '',
-      }));
+      const data = (await response.json()) as FirestoreListResponse;
+      const documents = data.documents ?? [];
+
+      return documents
+        .map((doc) => this.firestoreDocumentToEntry(doc))
+        .sort((a, b) => b.score - a.score);
     } catch {
       return undefined;
     }
   }
 
+  private firestoreDocumentToEntry(doc: FirestoreDocument): HighscoreEntry {
+    const fields = doc.fields ?? {};
+
+    return {
+      name: fields.player_name?.stringValue?.trim() || 'Spieler',
+      score: this.firestoreNumber(fields.score),
+      hits: this.firestoreNumber(fields.hits),
+      createdAt: fields.created_at?.timestampValue ?? fields.created_at?.stringValue ?? '',
+    };
+  }
+
+  private firestoreNumber(value?: FirestoreValue): number {
+    if (!value) {
+      return 0;
+    }
+
+    if (value.integerValue !== undefined) {
+      return Number(value.integerValue);
+    }
+
+    if (value.doubleValue !== undefined) {
+      return Number(value.doubleValue);
+    }
+
+    return 0;
+  }
+
   private async saveScoreOnline(entry: HighscoreEntry): Promise<boolean> {
+    const url = `${this.firestoreBaseUrl}/${this.firestoreCollection}?key=${this.firebaseApiKey}`;
+
     try {
-      const response = await fetch(`${this.supabaseUrl}/rest/v1/${this.supabaseTable}`, {
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
-          ...this.supabaseHeaders(),
           'Content-Type': 'application/json',
-          Prefer: 'return=minimal',
         },
         body: JSON.stringify({
-          player_name: entry.name,
-          score: entry.score,
-          hits: entry.hits,
+          fields: {
+            player_name: { stringValue: entry.name },
+            score: { integerValue: String(Math.round(entry.score)) },
+            hits: { integerValue: String(Math.round(entry.hits)) },
+            created_at: { timestampValue: entry.createdAt },
+          },
         }),
       });
 
@@ -1401,13 +1456,6 @@ export class App implements AfterViewInit, OnDestroy {
     } catch {
       return false;
     }
-  }
-
-  private supabaseHeaders(): Record<string, string> {
-    return {
-      apikey: this.supabaseAnonKey,
-      Authorization: `Bearer ${this.supabaseAnonKey}`,
-    };
   }
 
   private getLocalScores(): HighscoreEntry[] {
