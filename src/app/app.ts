@@ -427,7 +427,19 @@ export class App implements AfterViewInit, OnDestroy {
       return;
     }
 
+    // Gedrueckt-Halten fuer das Gatling-Dauerfeuer merken.
+    this.pointerDown = true;
+    this.lastPointerX = event.clientX;
+    this.lastPointerY = event.clientY;
+    this.gatlingFireTimer = 0;
+
     this.shootAt(event.clientX, event.clientY);
+  }
+
+  protected releasePointer(event: PointerEvent): void {
+    if (event.button === 0) {
+      this.pointerDown = false;
+    }
   }
 
   protected switchWeaponFromWheel(event: WheelEvent): void {
@@ -450,6 +462,8 @@ export class App implements AfterViewInit, OnDestroy {
       return;
     }
 
+    this.lastPointerX = event.clientX;
+    this.lastPointerY = event.clientY;
     this.moveCrosshair(event.clientX, event.clientY);
   }
 
@@ -488,6 +502,12 @@ export class App implements AfterViewInit, OnDestroy {
 
   protected saveScoreDisabled(): boolean {
     return this.scoreSaved() || this.scoreSaving() || this.score() <= 0;
+  }
+
+  @HostListener('window:pointerup')
+  protected handleWindowPointerUp(): void {
+    // Falls die Maus ausserhalb des Canvas losgelassen wird, Dauerfeuer stoppen.
+    this.pointerDown = false;
   }
 
   @HostListener('window:keydown', ['$event'])
@@ -551,8 +571,14 @@ export class App implements AfterViewInit, OnDestroy {
     this.specialCooldown.set(0);
     this.doubleShotTimer = 0;
     this.fastReloadTimer = 0;
+    this.gatlingTimer = 0;
+    this.infiniteAmmoTimer = 0;
+    this.gatlingFireTimer = 0;
+    this.pointerDown = false;
     this.doubleShotTime.set(0);
     this.fastReloadTime.set(0);
+    this.gatlingTime.set(0);
+    this.infiniteAmmoTime.set(0);
     this.updatePerkStatus();
     this.reloadTimer = 0;
     this.reloadActive.set(false);
@@ -696,11 +722,15 @@ export class App implements AfterViewInit, OnDestroy {
     const random = Math.random();
     let type: PerkType = 'time';
 
-    if (random > 0.82) {
+    if (random > 0.9) {
+      type = 'gatling';
+    } else if (random > 0.8) {
+      type = 'infinite-ammo';
+    } else if (random > 0.66) {
       type = 'screen-bomb';
-    } else if (random > 0.58) {
+    } else if (random > 0.48) {
       type = 'fast-reload';
-    } else if (random > 0.32) {
+    } else if (random > 0.28) {
       type = 'double-shot';
     }
 
@@ -733,6 +763,14 @@ export class App implements AfterViewInit, OnDestroy {
       return { ...base, label: 'B', color: '#f97316', outlineColor: '#7c2d12' };
     }
 
+    if (type === 'gatling') {
+      return { ...base, label: 'MG', color: '#ef4444', outlineColor: '#7f1d1d' };
+    }
+
+    if (type === 'infinite-ammo') {
+      return { ...base, label: '∞', color: '#14b8a6', outlineColor: '#134e4a' };
+    }
+
     return { ...base, label: '+8', color: '#22c55e', outlineColor: '#14532d' };
   }
 
@@ -759,7 +797,41 @@ export class App implements AfterViewInit, OnDestroy {
       this.fastReloadTime.set(this.fastReloadTimer);
     }
 
+    if (this.infiniteAmmoTimer > 0) {
+      this.infiniteAmmoTimer = Math.max(0, this.infiniteAmmoTimer - deltaTime);
+      this.infiniteAmmoTime.set(this.infiniteAmmoTimer);
+
+      // Waffe waehrend des Effekts stets voll anzeigen.
+      if (this.reloadTimer === 0) {
+        this.weaponAmmo[this.currentWeaponIndex] = this.currentWeapon().maxAmmo;
+        this.syncWeaponHud();
+      }
+    }
+
+    if (this.gatlingTimer > 0) {
+      this.gatlingTimer = Math.max(0, this.gatlingTimer - deltaTime);
+      this.gatlingTime.set(this.gatlingTimer);
+      this.updateGatlingFire(deltaTime);
+    }
+
     this.updatePerkStatus();
+  }
+
+  private updateGatlingFire(deltaTime: number): void {
+    // Nur feuern, solange die Maus/der Finger gedrueckt bleibt.
+    if (!this.pointerDown) {
+      this.gatlingFireTimer = 0;
+      return;
+    }
+
+    // 10x schneller als normal geklickt: alle 0.06s ein Schuss (~16/Sek.).
+    const fireInterval = 0.06;
+    this.gatlingFireTimer += deltaTime;
+
+    while (this.gatlingFireTimer >= fireInterval) {
+      this.gatlingFireTimer -= fireInterval;
+      this.shootAt(this.lastPointerX, this.lastPointerY);
+    }
   }
 
   private shootAt(clientX: number, clientY: number): void {
@@ -777,7 +849,11 @@ export class App implements AfterViewInit, OnDestroy {
 
     this.moveCrosshair(clientX, clientY);
 
-    if (this.ammo() <= 0) {
+    // Waehrend Gatling gilt ebenfalls unbegrenzte Munition, sonst waere das
+    // Dauerfeuer in unter einer Sekunde leer.
+    const infiniteAmmo = this.infiniteAmmoTimer > 0 || this.gatlingTimer > 0;
+
+    if (!infiniteAmmo && this.ammo() <= 0) {
       this.playEmptySound();
       this.addFloatingText('Leer!', pos.x, pos.y, '#f87171');
       return;
@@ -785,8 +861,10 @@ export class App implements AfterViewInit, OnDestroy {
 
     const weapon = this.currentWeapon();
 
-    this.weaponAmmo[this.currentWeaponIndex] = Math.max(0, this.weaponAmmo[this.currentWeaponIndex] - 1);
-    this.syncWeaponHud();
+    if (!infiniteAmmo) {
+      this.weaponAmmo[this.currentWeaponIndex] = Math.max(0, this.weaponAmmo[this.currentWeaponIndex] - 1);
+      this.syncWeaponHud();
+    }
     this.playShootSound(weapon);
     this.createWeaponShotParticles(pos, weapon);
 
@@ -808,9 +886,32 @@ export class App implements AfterViewInit, OnDestroy {
 
     for (const hitPigIndex of hitPigIndexes) {
       const pig = this.pigs[hitPigIndex];
-      this.pigs.splice(hitPigIndex, 1);
-      this.applyPigHit(pig, weapon);
+      const headshot = this.isHeadshot(pos, weapon, pig);
+      this.applyPigHit(pig, hitPigIndex, weapon, headshot);
     }
+  }
+
+  private isHeadshot(pos: CanvasPosition, weapon: Weapon, pig: Pig): boolean {
+    // Bomben-Schweine haben keinen Bonus-Headshot.
+    if (pig.type === 'bomb') {
+      return false;
+    }
+
+    // Kopfmittelpunkt so, wie er in drawPig gezeichnet wird (inkl. Blickrichtung).
+    const headX = pig.x + pig.direction * pig.size * 0.92;
+    const headY = pig.y - pig.size * 0.18;
+    const headRadius = pig.size * 0.58 + weapon.hitPadding;
+
+    for (const offset of this.getEffectiveShotOffsets(weapon)) {
+      const dx = pos.x + offset.x - headX;
+      const dy = pos.y + offset.y - headY;
+
+      if (dx * dx + dy * dy <= headRadius * headRadius) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private switchWeapon(direction: 1 | -1): void {
@@ -903,6 +1004,31 @@ export class App implements AfterViewInit, OnDestroy {
       return;
     }
 
+    if (perk.type === 'gatling') {
+      // 30 Sekunden Dauerfeuer: 10x so schnell schiessen, solange die Maus haelt.
+      this.gatlingTimer = 30;
+      this.gatlingTime.set(this.gatlingTimer);
+      this.gatlingFireTimer = 0;
+      this.updatePerkStatus();
+      this.addFloatingText('Gatling! 30s', perk.x, perk.y, '#fecaca');
+      this.playPerkSound();
+      return;
+    }
+
+    if (perk.type === 'infinite-ammo') {
+      // 30 Sekunden unbegrenzte Munition ohne Nachladen.
+      this.infiniteAmmoTimer = 30;
+      this.infiniteAmmoTime.set(this.infiniteAmmoTimer);
+      this.reloadTimer = 0;
+      this.reloadActive.set(false);
+      this.weaponAmmo[this.currentWeaponIndex] = this.currentWeapon().maxAmmo;
+      this.syncWeaponHud();
+      this.updatePerkStatus();
+      this.addFloatingText('Unendlich Munition! 30s', perk.x, perk.y, '#99f6e4');
+      this.playPerkSound();
+      return;
+    }
+
     this.detonateScreenBomb(perk.x, perk.y);
   }
 
@@ -964,10 +1090,12 @@ export class App implements AfterViewInit, OnDestroy {
     return offsets;
   }
 
-  private applyPigHit(pig: Pig, weapon: Weapon): void {
+  private applyPigHit(pig: Pig, pigIndex: number, weapon: Weapon, headshot: boolean): void {
     this.hits.update((value) => value + 1);
 
+    // Bomben-Schweine sterben wie bisher sofort und ziehen Punkte ab.
     if (pig.type === 'bomb') {
+      this.pigs.splice(pigIndex, 1);
       this.score.update((value) => Math.max(0, value + pig.points));
       this.updateBestScore();
       this.playBadHitSound();
@@ -976,11 +1104,36 @@ export class App implements AfterViewInit, OnDestroy {
       return;
     }
 
-    const points = Math.round(pig.points * weapon.positiveScoreMultiplier);
+    // Headshot toetet sofort (egal wieviel Leben uebrig ist).
+    const lethal = headshot || pig.health - 1 <= 0;
+
+    if (!lethal) {
+      pig.health -= 1;
+      this.playPigHitSound();
+      this.addFloatingText('Treffer!', pig.x, pig.y - pig.size, '#fde68a');
+      this.createExplosion(pig.x, pig.y, pig.type === 'gold' ? '#facc15' : '#fb7185', 8);
+      return;
+    }
+
+    this.pigs.splice(pigIndex, 1);
+
+    let points = Math.round(pig.points * weapon.positiveScoreMultiplier);
+
+    if (headshot) {
+      // Headshot-Bonus: 50% Extrapunkte obendrauf.
+      points = Math.round(points * 1.5);
+    }
+
     this.score.update((value) => value + points);
     this.updateBestScore();
     this.playPigHitSound();
-    this.addFloatingText(`+${points}`, pig.x, pig.y, pig.type === 'gold' ? '#facc15' : '#ffffff');
+
+    if (headshot) {
+      this.addFloatingText(`Headshot +${points}`, pig.x, pig.y, '#f9a8d4');
+    } else {
+      this.addFloatingText(`+${points}`, pig.x, pig.y, pig.type === 'gold' ? '#facc15' : '#ffffff');
+    }
+
     this.createExplosion(pig.x, pig.y, pig.type === 'gold' ? '#facc15' : '#fb7185', 16);
   }
 
@@ -1139,6 +1292,12 @@ export class App implements AfterViewInit, OnDestroy {
   private drawPig(ctx: CanvasRenderingContext2D, pig: Pig): void {
     ctx.save();
     ctx.translate(pig.x, pig.y + Math.sin(pig.wobble) * 6);
+
+    // Verletzte Schweine (bereits getroffen) leicht durchscheinend darstellen.
+    if (pig.type !== 'bomb' && pig.health < pig.maxHealth) {
+      ctx.globalAlpha = 0.72;
+    }
+
     ctx.scale(pig.direction, 1);
 
     let bodyColor = '#fb7185';
@@ -1509,6 +1668,14 @@ export class App implements AfterViewInit, OnDestroy {
 
     if (this.fastReloadTimer > 0) {
       active.push(`Schnell laden ${Math.ceil(this.fastReloadTimer)}s`);
+    }
+
+    if (this.gatlingTimer > 0) {
+      active.push(`Gatling ${Math.ceil(this.gatlingTimer)}s`);
+    }
+
+    if (this.infiniteAmmoTimer > 0) {
+      active.push(`Unendlich Munition ${Math.ceil(this.infiniteAmmoTimer)}s`);
     }
 
     this.perkStatus.set(active.length > 0 ? active.join(' | ') : 'Keine');
