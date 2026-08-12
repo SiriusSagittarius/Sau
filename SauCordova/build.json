@@ -1,0 +1,11 @@
+{
+  "android": {
+    "release": {
+      "keystore": "android.jks",
+      "storePassword": "Upaulusch@79",
+      "alias": "sau",
+      "password": "Upaulusch@79",
+      "keystoreType": ""
+    }
+  }
+}

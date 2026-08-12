@@ -1,0 +1,21 @@
+# Angular Single-Page-App Routing fuer Apache (netcup / Plesk).
+# Sorgt dafuer, dass alle Pfade auf index.html gehen, damit Neuladen
+# und Direktaufrufe von Unterseiten nicht mit 404 enden.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Vorhandene Dateien und Ordner normal ausliefern.
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # Alles andere an die App (index.html) weiterreichen.
+  RewriteRule ^ /index.html [L]
+</IfModule>
+
+# HTTPS erzwingen (falls jemand ueber http kommt).
+<IfModule mod_rewrite.c>
+  RewriteCond %{HTTPS} off
+  RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</IfModule>
