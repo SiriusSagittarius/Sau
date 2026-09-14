@@ -22,6 +22,19 @@
     <div class="panel">Best: <span>{{ bestScore() }}</span></div>
   </div>
 
+  @if (bossActive()) {
+    <div class="boss-bar">
+      <div class="boss-bar-label">🐗 RIESENSAU</div>
+      <div class="boss-bar-track">
+        <div class="boss-bar-fill" [style.width.%]="bossHealthRatio() * 100"></div>
+      </div>
+    </div>
+  }
+
+  @if (bossWarning()) {
+    <div class="boss-warning">BOSS!</div>
+  }
+
   <div #crosshair class="crosshair" [class.hidden]="!showCrosshair()"></div>
 
   <audio #bgMusic loop preload="auto">
@@ -68,10 +81,13 @@
     <h1>Schweine Alarm</h1>
     <p>
       Tippe oder klicke auf die Schweine. Normale Schweine brauchen 2 Treffer,
-      goldene Schweine 3 – ausser du triffst den Kopf ein Headshot toetet sofort
+      goldene Schweine 3 – ausser du triffst den Kopf ein Headshot tötet sofort
       und gibt Bonuspunkte! Schwarze Bomben-Schweine kosten Punkte.
-      Triff Perks fuer Zeit, Doppelschuss, schnelleres Nachladen, Bomben,
+      Triff Perks für Zeit, Doppelschuss, schnelleres Nachladen, Bomben,
       Gatling-Dauerfeuer (MG) und unbegrenzte Munition  (∞).
+      In den letzten 20 Sekunden erscheint die RIESENSAU 🐗 – sie hält viel aus
+      und spuckt Bomben-Ferkel, die Zeit kosten. Besiege sie für fette Punkte
+      und Extra-Zeit!
     </p>
     <input
       class="name-input"
@@ -113,7 +129,7 @@
           <button type="button" (click)="toggleMusic()">{{ musicLabel() }}</button>
         </div>
         <label class="option-row option-slider">
-          <span>Lautstaerke</span>
+          <span>Lautstärke</span>
           <input
             type="range"
             min="0"
@@ -124,7 +140,7 @@
           />
         </label>
       </div>
-      <button type="button" (click)="backToPauseMenu()">Zurueck</button>
+      <button type="button" (click)="backToPauseMenu()">Zurück</button>
     }
 
     @if (pausePanel() === 'leaderboard') {
@@ -142,7 +158,7 @@
           <div class="highscore-empty">{{ highscoreMessage() }}</div>
         }
       </div>
-      <button type="button" (click)="backToPauseMenu()">Zurueck</button>
+      <button type="button" (click)="backToPauseMenu()">Zurück</button>
     }
 
     @if (pausePanel() === 'imprint') {
@@ -150,7 +166,7 @@
       <div class="legal-panel">
         <p>Schweine Alarm ist ein privates Spielprojekt.</p>
         <p>Verantwortlich: Spieler / Projektinhaber</p>
-        <p>Kontakt: Bitte spaeter deine echte Kontaktadresse eintragen.</p>
+        <p>Kontakt: Bitte später deine echte Kontaktadresse eintragen.</p>
       </div>
       <button type="button" (click)="backToPauseMenu()">Zurueck</button>
     }
@@ -162,7 +178,7 @@
         <p>Gespeichert werden Name, Punkte, Treffer und Zeitpunkt. Fuer Musik und Sound werden lokale Browserfunktionen genutzt.</p>
         <p>Diese Texte sind Platzhalter und sollten vor einer Veroeffentlichung rechtlich geprueft werden.</p>
       </div>
-      <button type="button" (click)="backToPauseMenu()">Zurueck</button>
+      <button type="button" (click)="backToPauseMenu()">Zurück</button>
     }
   </div>
 

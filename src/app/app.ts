@@ -1,7 +1,7 @@
 import { AfterViewInit, Component, ElementRef, HostListener, OnDestroy, signal, ViewChild } from '@angular/core';
 
 type GameScreen = 'start' | 'playing' | 'paused' | 'game-over';
-type PigType = 'normal' | 'fast' | 'gold' | 'bomb';
+type PigType = 'normal' | 'fast' | 'gold' | 'bomb' | 'boss' | 'piglet';
 type WeaponId = 'blaster' | 'shotgun' | 'rifle';
 type PausePanel = 'main' | 'options' | 'imprint' | 'privacy' | 'leaderboard';
 type PerkType = 'time' | 'double-shot' | 'fast-reload' | 'screen-bomb' | 'gatling' | 'infinite-ammo';
@@ -17,6 +17,11 @@ interface Pig {
   health: number;
   maxHealth: number;
   wobble: number;
+  // Boss-spezifisch: laeuft am Rand hin und her statt durchzulaufen,
+  // spuckt periodisch Bomben-Ferkel und blinkt beim Treffer kurz auf.
+  vy?: number;
+  spitTimer?: number;
+  hitFlash?: number;
 }
 
 interface Particle {
@@ -138,6 +143,10 @@ export class App implements AfterViewInit, OnDestroy {
   protected readonly infiniteAmmoTime = signal(0);
   protected readonly scoreSaved = signal(false);
   protected readonly scoreSaving = signal(false);
+  // Boss-HUD: aktiv-Flag, Lebensanteil (0..1) und kurze Warnung beim Auftritt.
+  protected readonly bossActive = signal(false);
+  protected readonly bossHealthRatio = signal(1);
+  protected readonly bossWarning = signal(false);
 
   // Firebase / Firestore Konfiguration (aus der Firebase-Konsole).
   private readonly firebaseProjectId = 'sauerei-abad9';
@@ -210,6 +219,11 @@ export class App implements AfterViewInit, OnDestroy {
   private lastPointerY = 0;
   private reloadTimer = 0;
   private specialActiveTimer?: number;
+  // Boss-Steuerung: pro Runde nur einmal spawnen; Referenz auf die Boss-Instanz.
+  private boss?: Pig;
+  private bossSpawned = false;
+  private bossWarningTimer = 0;
+  private readonly bossTriggerTime = 20;
 
   ngAfterViewInit(): void {
     this.canvas = this.gameCanvasRef.nativeElement;
@@ -322,6 +336,20 @@ export class App implements AfterViewInit, OnDestroy {
       const pig = this.pigs[i];
 
       if (pig.type === 'bomb') {
+        continue;
+      }
+
+      // Der Boss stirbt nicht durch die Flaechenwaffe, nimmt aber Schaden.
+      if (pig.type === 'boss') {
+        pig.health = Math.max(0, pig.health - 6);
+        pig.hitFlash = 0.12;
+        this.bossHealthRatio.set(pig.health / pig.maxHealth);
+        this.createExplosion(pig.x, pig.y, '#fb7185', 20);
+
+        if (pig.health <= 0) {
+          this.defeatBoss(pig, i);
+        }
+
         continue;
       }
 
@@ -583,6 +611,12 @@ export class App implements AfterViewInit, OnDestroy {
     this.reloadTimer = 0;
     this.reloadActive.set(false);
     this.specialActive.set(false);
+    this.boss = undefined;
+    this.bossSpawned = false;
+    this.bossWarningTimer = 0;
+    this.bossActive.set(false);
+    this.bossHealthRatio.set(1);
+    this.bossWarning.set(false);
     this.scoreSaved.set(false);
     this.scoreSaving.set(false);
     this.pausePanel.set('main');
@@ -607,6 +641,23 @@ export class App implements AfterViewInit, OnDestroy {
 
     this.updatePerkEffects(deltaTime);
 
+    // Boss einmalig ausloesen, sobald die Restzeit die Schwelle unterschreitet.
+    if (!this.bossSpawned && nextTimeLeft <= this.bossTriggerTime) {
+      this.spawnBoss();
+    }
+
+    if (this.bossWarningTimer > 0) {
+      this.bossWarningTimer = Math.max(0, this.bossWarningTimer - deltaTime);
+
+      if (this.bossWarningTimer === 0) {
+        this.bossWarning.set(false);
+      }
+    }
+
+    if (this.boss) {
+      this.updateBoss(this.boss, deltaTime);
+    }
+
     if (this.reloadTimer > 0) {
       this.reloadTimer = Math.max(0, this.reloadTimer - deltaTime);
 
@@ -620,7 +671,11 @@ export class App implements AfterViewInit, OnDestroy {
     this.spawnTimer += deltaTime;
 
     const difficulty = 1 + (60 - nextTimeLeft) / 60;
-    const spawnDelay = Math.max(0.35, 1.15 - difficulty * 0.28);
+    // Waehrend der Boss lebt, spawnen normale Schweine deutlich langsamer,
+    // damit der Kampf im Fokus steht (die Bomben-Ferkel kommen vom Boss).
+    const spawnDelay = this.boss
+      ? Math.max(1.2, 1.6 - difficulty * 0.2)
+      : Math.max(0.35, 1.15 - difficulty * 0.28);
 
     if (this.spawnTimer >= spawnDelay) {
       this.spawnPig();
@@ -698,6 +753,134 @@ export class App implements AfterViewInit, OnDestroy {
     });
   }
 
+  private spawnBoss(): void {
+    if (!this.canvas || this.bossSpawned) {
+      return;
+    }
+
+    this.bossSpawned = true;
+
+    const bossHealth = 30;
+    const boss: Pig = {
+      x: this.canvas.width / 2,
+      y: 210,
+      size: 92,
+      direction: Math.random() < 0.5 ? 1 : -1,
+      speed: 110,
+      type: 'boss',
+      points: 500,
+      health: bossHealth,
+      maxHealth: bossHealth,
+      wobble: 0,
+      vy: 40,
+      spitTimer: 1.5,
+      hitFlash: 0,
+    };
+
+    this.boss = boss;
+    this.pigs.push(boss);
+
+    this.bossActive.set(true);
+    this.bossHealthRatio.set(1);
+    this.bossWarning.set(true);
+    this.bossWarningTimer = 2.5;
+    this.addFloatingText('BOSS!', this.canvas.width / 2, 120, '#fca5a5');
+    this.playBossAppearSound();
+  }
+
+  private updateBoss(boss: Pig, deltaTime: number): void {
+    if (!this.canvas) {
+      return;
+    }
+
+    boss.wobble += deltaTime * 3;
+
+    if (boss.hitFlash && boss.hitFlash > 0) {
+      boss.hitFlash = Math.max(0, boss.hitFlash - deltaTime);
+    }
+
+    // Horizontal hin und her, am Rand abprallen.
+    boss.x += boss.direction * boss.speed * deltaTime;
+    const marginX = boss.size * 1.2;
+
+    if (boss.x < marginX) {
+      boss.x = marginX;
+      boss.direction = 1;
+    } else if (boss.x > this.canvas.width - marginX) {
+      boss.x = this.canvas.width - marginX;
+      boss.direction = -1;
+    }
+
+    // Sanftes vertikales Wandern im oberen Bereich.
+    boss.y += (boss.vy ?? 0) * deltaTime;
+
+    if (boss.y < 150) {
+      boss.y = 150;
+      boss.vy = Math.abs(boss.vy ?? 40);
+    } else if (boss.y > 320) {
+      boss.y = 320;
+      boss.vy = -Math.abs(boss.vy ?? 40);
+    }
+
+    // Periodisch ein Bomben-Ferkel ausspucken.
+    boss.spitTimer = (boss.spitTimer ?? 0) - deltaTime;
+
+    if (boss.spitTimer <= 0) {
+      this.spawnPiglet(boss);
+      boss.spitTimer = 2 + Math.random() * 1.5;
+    }
+  }
+
+  private spawnPiglet(boss: Pig): void {
+    // Kleines Bomben-Ferkel, das nach unten faellt. Erreicht es den Boden,
+    // zieht es Zeit ab. Man muss es also abschiessen.
+    const piglet: Pig = {
+      x: boss.x,
+      y: boss.y + boss.size * 0.4,
+      size: 18,
+      direction: Math.random() < 0.5 ? 1 : -1,
+      speed: 30 + Math.random() * 30,
+      type: 'piglet',
+      // Positiver Abschuss-Bonus; die Strafe entsteht nur beim Bodenaufprall.
+      points: 15,
+      health: 1,
+      maxHealth: 1,
+      wobble: Math.random() * Math.PI * 2,
+      vy: 90 + Math.random() * 40,
+    };
+
+    this.pigs.push(piglet);
+    this.playSpitSound();
+  }
+
+  private defeatBoss(boss: Pig, index: number): void {
+    this.pigs.splice(index, 1);
+    this.boss = undefined;
+    this.bossActive.set(false);
+    this.bossWarning.set(false);
+
+    const bonus = boss.points;
+    this.score.update((value) => value + bonus);
+    this.updateBestScore();
+
+    // Ordentlich Zeit als Belohnung.
+    this.timeLeft.update((value) => value + 15);
+
+    if (this.canvas) {
+      this.addFloatingText(`BOSS besiegt! +${bonus}`, boss.x, boss.y - boss.size, '#fca5a5');
+      this.addFloatingText('+15s', boss.x, boss.y, '#bbf7d0');
+    }
+
+    // Grosser Explosions-Effekt.
+    for (let i = 0; i < 5; i++) {
+      const ox = boss.x + (Math.random() - 0.5) * boss.size * 2;
+      const oy = boss.y + (Math.random() - 0.5) * boss.size * 2;
+      this.createExplosion(ox, oy, i % 2 === 0 ? '#fb7185' : '#facc15', 26);
+    }
+
+    this.playBossDefeatSound();
+  }
+
   private updatePigs(deltaTime: number): void {
     if (!this.canvas) {
       return;
@@ -705,6 +888,29 @@ export class App implements AfterViewInit, OnDestroy {
 
     for (let i = this.pigs.length - 1; i >= 0; i--) {
       const pig = this.pigs[i];
+
+      // Der Boss wird in updateBoss gesteuert, nicht hier.
+      if (pig.type === 'boss') {
+        continue;
+      }
+
+      // Bomben-Ferkel fallen nach unten; erreichen sie den Boden, kosten sie Zeit.
+      if (pig.type === 'piglet') {
+        pig.x += pig.direction * pig.speed * deltaTime;
+        pig.y += (pig.vy ?? 90) * deltaTime;
+        pig.wobble += deltaTime * 8;
+
+        if (pig.y > this.canvas.height - 30) {
+          this.pigs.splice(i, 1);
+          this.timeLeft.update((value) => Math.max(0, value - 2));
+          this.createExplosion(pig.x, pig.y, '#111827', 16);
+          this.addFloatingText('-2s', pig.x, pig.y - 20, '#fca5a5');
+          this.playBadHitSound();
+        }
+
+        continue;
+      }
+
       pig.x += pig.direction * pig.speed * deltaTime;
       pig.wobble += deltaTime * 6;
 
@@ -975,7 +1181,7 @@ export class App implements AfterViewInit, OnDestroy {
 
   private collectPerk(perk: Perk): void {
     if (perk.type === 'time') {
-      this.timeLeft.update((value) => Math.min(95, value + 8));
+      this.timeLeft.update((value) => value + 8);
       this.addFloatingText('+8s Zeit', perk.x, perk.y, '#bbf7d0');
       this.playPerkSound();
       return;
@@ -1040,6 +1246,19 @@ export class App implements AfterViewInit, OnDestroy {
       const pig = this.pigs[i];
       this.createExplosion(pig.x, pig.y, pig.type === 'gold' ? '#facc15' : '#fb7185', 12);
 
+      // Der Boss stirbt nicht durch die Bildschirm-Bombe, nimmt aber Schaden.
+      if (pig.type === 'boss') {
+        pig.health = Math.max(0, pig.health - 8);
+        pig.hitFlash = 0.12;
+        this.bossHealthRatio.set(pig.health / pig.maxHealth);
+
+        if (pig.health <= 0) {
+          this.defeatBoss(pig, i);
+        }
+
+        continue;
+      }
+
       if (pig.type !== 'bomb') {
         bonus += pig.points;
         count++;
@@ -1093,6 +1312,32 @@ export class App implements AfterViewInit, OnDestroy {
   private applyPigHit(pig: Pig, pigIndex: number, weapon: Weapon, headshot: boolean): void {
     this.hits.update((value) => value + 1);
 
+    // Boss: viel Leben, Headshots machen doppelten Schaden, kurzer Treffer-Blitz.
+    if (pig.type === 'boss') {
+      const damage = headshot ? 2 : 1;
+      pig.health = Math.max(0, pig.health - damage);
+      pig.hitFlash = 0.12;
+      this.bossHealthRatio.set(pig.health / pig.maxHealth);
+
+      // Kleine Belohnung pro Treffer, damit der Kampf sich lohnt.
+      const hitScore = headshot ? 15 : 10;
+      this.score.update((value) => value + hitScore);
+      this.updateBestScore();
+      this.createExplosion(pig.x, pig.y, headshot ? '#f9a8d4' : '#fb7185', headshot ? 14 : 8);
+
+      if (headshot) {
+        this.addFloatingText('Headshot!', pig.x, pig.y - pig.size * 0.6, '#f9a8d4');
+      }
+
+      this.playPigHitSound();
+
+      if (pig.health <= 0) {
+        this.defeatBoss(pig, pigIndex);
+      }
+
+      return;
+    }
+
     // Bomben-Schweine sterben wie bisher sofort und ziehen Punkte ab.
     if (pig.type === 'bomb') {
       this.pigs.splice(pigIndex, 1);
@@ -1126,6 +1371,7 @@ export class App implements AfterViewInit, OnDestroy {
 
     this.score.update((value) => value + points);
     this.updateBestScore();
+    this.addTimeBonus(pig.type, pig.x, pig.y);
     this.playPigHitSound();
 
     if (headshot) {
@@ -1293,8 +1539,9 @@ export class App implements AfterViewInit, OnDestroy {
     ctx.save();
     ctx.translate(pig.x, pig.y + Math.sin(pig.wobble) * 6);
 
-    // Verletzte Schweine (bereits getroffen) leicht durchscheinend darstellen.
-    if (pig.type !== 'bomb' && pig.health < pig.maxHealth) {
+    // Verletzte normale/goldene Schweine leicht durchscheinend darstellen.
+    // Boss und Bomben behalten volle Deckkraft.
+    if (pig.type !== 'bomb' && pig.type !== 'boss' && pig.type !== 'piglet' && pig.health < pig.maxHealth) {
       ctx.globalAlpha = 0.72;
     }
 
@@ -1308,9 +1555,15 @@ export class App implements AfterViewInit, OnDestroy {
       outlineColor = '#ca8a04';
     }
 
-    if (pig.type === 'bomb') {
+    if (pig.type === 'bomb' || pig.type === 'piglet') {
       bodyColor = '#111827';
       outlineColor = '#ef4444';
+    }
+
+    if (pig.type === 'boss') {
+      // Dunkle, grimmige Riesensau; blitzt beim Treffer kurz hell auf.
+      bodyColor = pig.hitFlash && pig.hitFlash > 0 ? '#f87171' : '#7f1d1d';
+      outlineColor = '#450a0a';
     }
 
     ctx.fillStyle = bodyColor;
@@ -1335,7 +1588,7 @@ export class App implements AfterViewInit, OnDestroy {
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = pig.type === 'bomb' ? '#ef4444' : '#fecdd3';
+    ctx.fillStyle = pig.type === 'bomb' || pig.type === 'piglet' ? '#ef4444' : '#fecdd3';
     ctx.beginPath();
     ctx.ellipse(pig.size * 1.25, -pig.size * 0.12, pig.size * 0.26, pig.size * 0.19, 0, 0, Math.PI * 2);
     ctx.fill();
@@ -1351,11 +1604,22 @@ export class App implements AfterViewInit, OnDestroy {
     ctx.arc(pig.size * 0.98, -pig.size * 0.34, 3.2, 0, Math.PI * 2);
     ctx.fill();
 
-    ctx.strokeStyle = pig.type === 'bomb' ? '#ef4444' : outlineColor;
+    ctx.strokeStyle = pig.type === 'bomb' || pig.type === 'piglet' ? '#ef4444' : outlineColor;
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.arc(-pig.size * 1.18, -pig.size * 0.08, pig.size * 0.22, 0, Math.PI * 1.6);
     ctx.stroke();
+
+    // Boss bekommt boese Augenbrauen fuer den grimmigen Look.
+    if (pig.type === 'boss') {
+      ctx.strokeStyle = '#fca5a5';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(pig.size * 1.02, -pig.size * 0.34);
+      ctx.lineTo(pig.size * 1.28, -pig.size * 0.24);
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 
@@ -1655,6 +1919,37 @@ export class App implements AfterViewInit, OnDestroy {
     this.bestScore.set(Math.max(this.bestScore(), this.score()));
   }
 
+  private timeBonusForPig(type: PigType): number {
+    // Zeitbonus je getoetetem Schwein, nach Typ gestaffelt.
+    // Bomben-Schweine geben keinen Bonus.
+    if (type === 'gold') {
+      return 1;
+    }
+
+    if (type === 'fast') {
+      return 0.5;
+    }
+
+    // Bomben-Schweine, Bomben-Ferkel und der Boss geben keinen Zeitbonus.
+    if (type === 'bomb' || type === 'piglet' || type === 'boss') {
+      return 0;
+    }
+
+    return 0.3;
+  }
+
+  private addTimeBonus(type: PigType, x: number, y: number): void {
+    const bonus = this.timeBonusForPig(type);
+
+    if (bonus <= 0) {
+      return;
+    }
+
+    // Kein oberes Limit: Zeit darf durch Treffer beliebig wachsen.
+    this.timeLeft.update((value) => value + bonus);
+    this.addFloatingText(`+${bonus}s`, x, y - 24, '#bbf7d0');
+  }
+
   private reloadSpeedMultiplier(): number {
     return this.fastReloadTimer > 0 ? 0.45 : 1;
   }
@@ -1798,6 +2093,22 @@ export class App implements AfterViewInit, OnDestroy {
 
   private playGameOverSound(): void {
     this.playSweep(260, 70, 0.5, 'sawtooth', 0.12);
+  }
+
+  private playBossAppearSound(): void {
+    // Tiefes, bedrohliches Grollen.
+    this.playSweep(120, 40, 0.6, 'sawtooth', 0.14);
+    window.setTimeout(() => this.playSweep(90, 55, 0.4, 'square', 0.1), 120);
+  }
+
+  private playSpitSound(): void {
+    this.playSweep(340, 120, 0.12, 'square', 0.06);
+  }
+
+  private playBossDefeatSound(): void {
+    // Triumphaler Aufstieg gefolgt von einem satten Boom.
+    this.playSweep(200, 900, 0.35, 'triangle', 0.12);
+    window.setTimeout(() => this.playSweep(160, 40, 0.5, 'sawtooth', 0.14), 180);
   }
 
   private stopAnimation(): void {

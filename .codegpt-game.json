@@ -1,0 +1,12 @@
+{
+  "name": "sau",
+  "engine": "generic",
+  "launch": {
+    "cmd": "node",
+    "args": ["node_modules/@angular/cli/bin/ng.js", "serve", "--port", "4200"]
+  },
+  "log": { "stdout": true },
+  "ready": "compiled successfully|Application bundle generation complete|Local:\\s+http",
+  "window": "localhost",
+  "sourceRoots": ["src"]
+}
