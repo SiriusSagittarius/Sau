@@ -17,6 +17,9 @@ interface Pig {
   health: number;
   maxHealth: number;
   wobble: number;
+  // Animationsuhr fuer den Fluegelschlag (Sekunden); pro Schwein leicht versetzt,
+  // damit nicht alle synchron schlagen.
+  flap: number;
   // Boss-spezifisch: laeuft am Rand hin und her statt durchzulaufen,
   // spuckt periodisch Bomben-Ferkel und blinkt beim Treffer kurz auf.
   vy?: number;
@@ -194,6 +197,27 @@ export class App implements AfterViewInit, OnDestroy {
   private ctx?: CanvasRenderingContext2D;
   private readonly backgroundImage = new Image();
   private backgroundImageReady = false;
+
+  // Flugschwein-Sprites: 8-Frame-Fluegelschlag pro Farbvariante.
+  // Metadaten aus dem Sprite-Bau (Anker = Koerperschwerpunkt).
+  private readonly pigSpriteFrameCount = 8;
+  private readonly pigSpriteWidth = 326;
+  private readonly pigSpriteHeight = 284;
+  private readonly pigSpriteAnchorX = 158;
+  private readonly pigSpriteAnchorY = 199;
+  // So gross ist der Koerper (Nase..Schwanz) im Sprite relativ zur Breite.
+  // Wird genutzt, um das Sprite an die Trefferbreite (size * ~3.1) anzupassen.
+  private readonly pigSpriteBodyWidth = 300;
+  private readonly pigSpriteVariants: Record<PigType, string> = {
+    normal: 'normal',
+    fast: 'normal',
+    gold: 'gold',
+    bomb: 'dark',
+    piglet: 'dark',
+    boss: 'boss',
+  };
+  private readonly pigSprites = new Map<string, HTMLImageElement>();
+  private pigSpritesReady = false;
   private audioContext?: AudioContext;
   private currentWeaponIndex = 0;
   private weaponAmmo = this.weapons.map((weapon) => weapon.maxAmmo);
@@ -230,6 +254,7 @@ export class App implements AfterViewInit, OnDestroy {
     this.ctx = this.canvas.getContext('2d') ?? undefined;
     this.bgMusicRef.nativeElement.volume = this.volume();
     this.loadBackgroundImage();
+    this.loadPigSprites();
     this.draw();
     void this.loadHighscores();
   }
@@ -750,6 +775,7 @@ export class App implements AfterViewInit, OnDestroy {
       health,
       maxHealth: health,
       wobble: Math.random() * Math.PI * 2,
+      flap: Math.random() * 10,
     });
   }
 
@@ -772,6 +798,7 @@ export class App implements AfterViewInit, OnDestroy {
       health: bossHealth,
       maxHealth: bossHealth,
       wobble: 0,
+      flap: 0,
       vy: 40,
       spitTimer: 1.5,
       hitFlash: 0,
@@ -794,6 +821,7 @@ export class App implements AfterViewInit, OnDestroy {
     }
 
     boss.wobble += deltaTime * 3;
+    boss.flap += deltaTime;
 
     if (boss.hitFlash && boss.hitFlash > 0) {
       boss.hitFlash = Math.max(0, boss.hitFlash - deltaTime);
@@ -846,6 +874,7 @@ export class App implements AfterViewInit, OnDestroy {
       health: 1,
       maxHealth: 1,
       wobble: Math.random() * Math.PI * 2,
+      flap: Math.random() * 10,
       vy: 90 + Math.random() * 40,
     };
 
@@ -899,6 +928,7 @@ export class App implements AfterViewInit, OnDestroy {
         pig.x += pig.direction * pig.speed * deltaTime;
         pig.y += (pig.vy ?? 90) * deltaTime;
         pig.wobble += deltaTime * 8;
+        pig.flap += deltaTime;
 
         if (pig.y > this.canvas.height - 30) {
           this.pigs.splice(i, 1);
@@ -913,6 +943,7 @@ export class App implements AfterViewInit, OnDestroy {
 
       pig.x += pig.direction * pig.speed * deltaTime;
       pig.wobble += deltaTime * 6;
+      pig.flap += deltaTime;
 
       if (pig.x < -100 || pig.x > this.canvas.width + 100) {
         this.pigs.splice(i, 1);
@@ -1499,6 +1530,48 @@ export class App implements AfterViewInit, OnDestroy {
     this.backgroundImage.src = this.backgroundImagePath;
   }
 
+  private loadPigSprites(): void {
+    const variants = ['normal', 'gold', 'dark', 'boss'];
+    let pending = variants.length * this.pigSpriteFrameCount;
+
+    const done = (): void => {
+      pending -= 1;
+      if (pending <= 0) {
+        this.pigSpritesReady = true;
+        this.draw();
+      }
+    };
+
+    for (const variant of variants) {
+      for (let frame = 0; frame < this.pigSpriteFrameCount; frame++) {
+        const img = new Image();
+        img.onload = done;
+        // Fehlt ein Frame, faellt drawPig auf die gezeichnete Form zurueck.
+        img.onerror = done;
+        img.src = `assets/img/enemies/pig_${variant}_${frame}.png`;
+        this.pigSprites.set(`${variant}_${frame}`, img);
+      }
+    }
+  }
+
+  // Waehlt das passende Sprite (Variante + aktueller Fluegelschlag-Frame).
+  private getPigSprite(pig: Pig): HTMLImageElement | undefined {
+    if (!this.pigSpritesReady) {
+      return undefined;
+    }
+
+    const variant = this.pigSpriteVariants[pig.type] ?? 'normal';
+    // ~10 Frames/Sekunde Fluegelschlag, pro Schwein leicht versetzt.
+    const frame = Math.floor(pig.flap * 10) % this.pigSpriteFrameCount;
+    const sprite = this.pigSprites.get(`${variant}_${frame}`);
+
+    if (!sprite || !sprite.complete || sprite.naturalWidth === 0) {
+      return undefined;
+    }
+
+    return sprite;
+  }
+
   private drawBackgroundImage(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement): void {
     const imageWidth = this.backgroundImage.naturalWidth || this.backgroundImage.width;
     const imageHeight = this.backgroundImage.naturalHeight || this.backgroundImage.height;
@@ -1535,6 +1608,32 @@ export class App implements AfterViewInit, OnDestroy {
     ctx.fill();
   }
 
+  // Zeichnet das Flugschwein-Sprite so, dass sein Koerper zur Trefferzone passt.
+  // ctx ist bereits auf pig.x/pig.y verschoben und ggf. horizontal gespiegelt.
+  private drawPigSprite(ctx: CanvasRenderingContext2D, pig: Pig, sprite: HTMLImageElement): void {
+    // Trefferbreite im Spiel: size * 1.55 * 2 = size * 3.1. Das Sprite so
+    // skalieren, dass sein Koerper (pigSpriteBodyWidth) diese Breite fuellt.
+    const scale = (pig.size * 3.1) / this.pigSpriteBodyWidth;
+
+    // Beim Treffer kurz hell aufblitzen lassen (v.a. Boss).
+    if (pig.hitFlash && pig.hitFlash > 0) {
+      ctx.globalAlpha = Math.min(1, ctx.globalAlpha) * 0.85;
+    }
+
+    // Anker (Koerperschwerpunkt) auf den Ursprung (0,0) legen.
+    const dx = -this.pigSpriteAnchorX * scale;
+    const dy = -this.pigSpriteAnchorY * scale;
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(
+      sprite,
+      dx,
+      dy,
+      this.pigSpriteWidth * scale,
+      this.pigSpriteHeight * scale,
+    );
+  }
+
   private drawPig(ctx: CanvasRenderingContext2D, pig: Pig): void {
     ctx.save();
     ctx.translate(pig.x, pig.y + Math.sin(pig.wobble) * 6);
@@ -1545,7 +1644,16 @@ export class App implements AfterViewInit, OnDestroy {
       ctx.globalAlpha = 0.72;
     }
 
+    // Blickrichtung: Sprite/Form zeigt nach rechts (+x), bei direction -1 spiegeln.
     ctx.scale(pig.direction, 1);
+
+    const sprite = this.getPigSprite(pig);
+
+    if (sprite) {
+      this.drawPigSprite(ctx, pig, sprite);
+      ctx.restore();
+      return;
+    }
 
     let bodyColor = '#fb7185';
     let outlineColor = '#be123c';
